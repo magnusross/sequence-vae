@@ -81,8 +81,9 @@ class Decoder(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.z_proj = nn.Linear(cfg.latent_dim, cfg.model_dim)   # z -> prepended token
-        self.z_cond = nn.Linear(cfg.latent_dim, cfg.model_dim)   # z -> broadcast bias on all positions
+        self.z_proj = nn.Linear(cfg.latent_dim, cfg.model_dim)    # z -> prepended token
+        self.z_cond = nn.Linear(cfg.latent_dim, cfg.model_dim)    # z -> broadcast bias on all positions
+        self.z_to_logits = nn.Linear(cfg.latent_dim, cfg.vocab_size)  # z -> direct logit bias (post-transformer)
         self.embed = nn.Embedding(cfg.vocab_size, cfg.model_dim, padding_idx=cfg.pad_idx)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=cfg.model_dim,
@@ -119,7 +120,8 @@ class Decoder(nn.Module):
         out = self.transformer(seq, mask=causal_mask, is_causal=True)  # [B, S+1, D]
 
         # Positions 0..S-1 of the output predict tokens at positions 0..S-1 of the target
-        logits = self.out_proj(out[:, :S, :])  # [B, S, vocab_size]
+        # Add a direct z->logits bias that the transformer layers cannot cancel
+        logits = self.out_proj(out[:, :S, :]) + self.z_to_logits(z).unsqueeze(1)  # [B, S, vocab_size]
         return logits
 
     @torch.no_grad()
@@ -149,7 +151,7 @@ class Decoder(nn.Module):
             S = seq.shape[1]
             causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
             out = self.transformer(seq, mask=causal_mask, is_causal=True)  # [B, S, D]
-            logits = self.out_proj(out[:, -1, :])  # [B, vocab_size]
+            logits = self.out_proj(out[:, -1, :]) + self.z_to_logits(z)  # [B, vocab_size]
 
             if temperature != 1.0:
                 logits = logits / temperature

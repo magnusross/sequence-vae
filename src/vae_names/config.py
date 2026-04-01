@@ -14,7 +14,7 @@ class Config:
     model_dim: int = 128
     num_heads: int = 4
     num_encoder_layers: int = 3
-    num_decoder_layers: int = 3
+    num_decoder_layers: int = 1
     latent_dim: int = 2           # 2D for visualization
     dropout: float = 0.1
     ff_dim: int = 256
@@ -28,5 +28,5 @@ class Config:
     temperature: float = 0.8
     grad_clip: float = 1.0
     seed: int = 42
-    word_dropout_rate: float = 0.5
-    free_bits: float = 0.5        # min KL per latent dimension (nats)
+    word_dropout_rate: float = 0.8
+    free_bits: float = 1.0        # min KL per latent dimension (nats)

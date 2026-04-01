@@ -1,5 +1,6 @@
 import torch
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -10,8 +11,18 @@ from .data import decode_sequence, get_dataloaders
 from .model import VAE
 
 
+def _model_device(model: VAE) -> torch.device:
+    return next(model.parameters()).device
+
+
 def load_model(path="model.pt") -> tuple[VAE, Config, dict, dict]:
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     cfg = checkpoint["cfg"]
     char_to_idx = checkpoint["char_to_idx"]
@@ -22,19 +33,27 @@ def load_model(path="model.pt") -> tuple[VAE, Config, dict, dict]:
     return model, cfg, char_to_idx, idx_to_char
 
 
-def _encode_names(model: VAE, names: list[str], char_to_idx: dict, cfg: Config) -> torch.Tensor:
+def _encode_names(
+    model: VAE, names: list[str], char_to_idx: dict, cfg: Config
+) -> torch.Tensor:
     """Encode a list of name strings to z-space (mu). Returns [N, latent_dim]."""
     tokens = []
     for name in names:
-        t = [cfg.sos_idx] + [char_to_idx[c] for c in name.lower() if c in char_to_idx] + [cfg.eos_idx]
+        t = (
+            [cfg.sos_idx]
+            + [char_to_idx[c] for c in name.lower() if c in char_to_idx]
+            + [cfg.eos_idx]
+        )
         t = t[: cfg.max_seq_len]
         t += [cfg.pad_idx] * (cfg.max_seq_len - len(t))
         tokens.append(t)
-    x = torch.tensor(tokens, dtype=torch.long)
+    x = torch.tensor(tokens, dtype=torch.long, device=_model_device(model))
     return model.encode(x)
 
 
-def sample_from_prior(model: VAE, cfg: Config, idx_to_char: dict, n: int = 20, temperature: float = 0.8):
+def sample_from_prior(
+    model: VAE, cfg: Config, idx_to_char: dict, n: int = 20, temperature: float = 0.8
+):
     """Sample z ~ N(0,I), decode. Print names."""
     seqs = model.sample(n, cfg.max_seq_len, temperature)
     names = [decode_sequence(s, idx_to_char) for s in seqs]
@@ -44,10 +63,14 @@ def sample_from_prior(model: VAE, cfg: Config, idx_to_char: dict, n: int = 20, t
     return names
 
 
-def reconstruct(model: VAE, names: list[str], char_to_idx: dict, idx_to_char: dict, cfg: Config):
+def reconstruct(
+    model: VAE, names: list[str], char_to_idx: dict, idx_to_char: dict, cfg: Config
+):
     """Encode -> decode using mu (no noise). Print original vs reconstructed."""
     mu = _encode_names(model, names, char_to_idx, cfg)
-    seqs = model.decoder.generate(mu, cfg.max_seq_len, temperature=0.5, eos_idx=cfg.eos_idx)
+    seqs = model.decoder.generate(
+        mu, cfg.max_seq_len, temperature=0.5, eos_idx=cfg.eos_idx
+    )
     print("Reconstructions:")
     for orig, seq in zip(names, seqs):
         rec = decode_sequence(seq, idx_to_char)
@@ -67,7 +90,7 @@ def interpolate(
     """Lerp between z1 and z2. Print names at each step."""
     z = _encode_names(model, [name1, name2], char_to_idx, cfg)
     z1, z2 = z[0], z[1]
-    alphas = torch.linspace(0, 1, steps)
+    alphas = torch.linspace(0, 1, steps, device=z.device)
     zs = torch.stack([(1 - a) * z1 + a * z2 for a in alphas])  # [steps, latent_dim]
     seqs = model.decoder.generate(zs, cfg.max_seq_len, temperature, cfg.eos_idx)
     print(f"Interpolation {name1!r} -> {name2!r}:")
@@ -84,6 +107,7 @@ def plot_latent_space(model: VAE, dataloader, idx_to_char: dict, cfg: Config):
 
     with torch.no_grad():
         for (x,) in dataloader:
+            x = x.to(_model_device(model))
             padding_mask = x == cfg.pad_idx
             mu = model.encode(x, padding_mask)
             all_mu.append(mu)
@@ -92,7 +116,7 @@ def plot_latent_space(model: VAE, dataloader, idx_to_char: dict, cfg: Config):
                 all_first.append(name[0] if name else "?")
                 all_lengths.append(len(name))
 
-    mu_np = torch.cat(all_mu, dim=0).numpy()
+    mu_np = torch.cat(all_mu, dim=0).cpu().numpy()
     first_letters = all_first
     lengths = np.array(all_lengths)
 
@@ -106,7 +130,15 @@ def plot_latent_space(model: VAE, dataloader, idx_to_char: dict, cfg: Config):
     sc = ax.scatter(mu_np[:, 0], mu_np[:, 1], c=colors, cmap="tab20", s=5, alpha=0.6)
     # Legend with letter labels
     handles = [
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=cmap(letter_to_idx[l]), markersize=6, label=l)
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=cmap(letter_to_idx[l]),
+            markersize=6,
+            label=l,
+        )
         for l in unique_letters
     ]
     ax.legend(handles=handles, title="First letter", loc="best", fontsize=7, ncol=3)
@@ -138,7 +170,9 @@ def decode_grid(
     temperature: float = 0.5,
 ):
     """Decode a grid of z points and print as 2D table."""
-    vals = torch.linspace(z_range[0], z_range[1], grid_size)
+    vals = torch.linspace(
+        z_range[0], z_range[1], grid_size, device=_model_device(model)
+    )
     # Build all (z0, z1) combinations; z0 = x-axis (columns), z1 = y-axis (rows, top=high)
     z0, z1 = torch.meshgrid(vals, vals, indexing="xy")
     zs = torch.stack([z0.flatten(), z1.flatten()], dim=1)  # [grid_size^2, 2]
@@ -167,7 +201,7 @@ def explore_neighborhood(
 ):
     """Perturb z_mu with small noise and decode variants."""
     mu = _encode_names(model, [name], char_to_idx, cfg)  # [1, L]
-    noise = torch.randn(n, cfg.latent_dim) * noise_scale
+    noise = torch.randn(n, cfg.latent_dim, device=mu.device) * noise_scale
     zs = mu.expand(n, -1) + noise  # [n, L]
     with torch.no_grad():
         seqs = model.decoder.generate(zs, cfg.max_seq_len, temperature, cfg.eos_idx)
@@ -189,13 +223,24 @@ def main():
     reconstruct(model, test_names, char_to_idx, idx_to_char, cfg)
 
     print("=" * 60)
-    interpolate(model, "alice", "bob", char_to_idx, idx_to_char, cfg, steps=10, temperature=0.5)
+    interpolate(
+        model, "alice", "bob", char_to_idx, idx_to_char, cfg, steps=10, temperature=0.5
+    )
 
     print("=" * 60)
     decode_grid(model, cfg, idx_to_char, grid_size=10, z_range=(-3, 3), temperature=0.5)
 
     print("=" * 60)
-    explore_neighborhood(model, "emma", char_to_idx, idx_to_char, cfg, noise_scale=0.3, n=15, temperature=0.5)
+    explore_neighborhood(
+        model,
+        "emma",
+        char_to_idx,
+        idx_to_char,
+        cfg,
+        noise_scale=0.3,
+        n=15,
+        temperature=0.5,
+    )
 
     print("=" * 60)
     print("Plotting latent space (this may take a moment)...")

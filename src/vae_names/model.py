@@ -81,7 +81,8 @@ class Decoder(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.z_proj = nn.Linear(cfg.latent_dim, cfg.model_dim)
+        self.z_proj = nn.Linear(cfg.latent_dim, cfg.model_dim)   # z -> prepended token
+        self.z_cond = nn.Linear(cfg.latent_dim, cfg.model_dim)   # z -> broadcast bias on all positions
         self.embed = nn.Embedding(cfg.vocab_size, cfg.model_dim, padding_idx=cfg.pad_idx)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=cfg.model_dim,
@@ -109,6 +110,8 @@ class Decoder(nn.Module):
         # Prepend z token; add positional encoding
         seq = torch.cat([z_tok, tgt_emb], dim=1)  # [B, S+1, D]
         seq = seq + self.pos_enc[: S + 1].unsqueeze(0)
+        # Broadcast z as a bias to every position so the decoder can't ignore it
+        seq = seq + self.z_cond(z).unsqueeze(1)  # [B, 1, D] broadcast over S+1
 
         # Causal mask of size (S+1) x (S+1)
         causal_mask = nn.Transformer.generate_square_subsequent_mask(S + 1, device=z.device)
@@ -134,10 +137,11 @@ class Decoder(nn.Module):
         """
         B = z.shape[0]
         device = z.device
-        z_tok = self.z_proj(z).unsqueeze(1)  # [B, 1, D]
+        z_tok = self.z_proj(z).unsqueeze(1)    # [B, 1, D]
+        z_bias = self.z_cond(z).unsqueeze(1)  # [B, 1, D] broadcast bias
 
         # seq holds generated embeddings; token_ids holds sampled indices
-        seq = z_tok + self.pos_enc[0].unsqueeze(0).unsqueeze(0)  # [B, 1, D]
+        seq = z_tok + self.pos_enc[0].unsqueeze(0).unsqueeze(0) + z_bias  # [B, 1, D]
         token_ids = torch.zeros(B, max_len, dtype=torch.long, device=device)
         done = torch.zeros(B, dtype=torch.bool, device=device)
 
@@ -159,7 +163,7 @@ class Decoder(nn.Module):
 
             # Embed next token and append
             next_emb = self.embed(next_tok).unsqueeze(1)  # [B, 1, D]
-            next_emb = next_emb + self.pos_enc[S].unsqueeze(0).unsqueeze(0)
+            next_emb = next_emb + self.pos_enc[S].unsqueeze(0).unsqueeze(0) + z_bias
             seq = torch.cat([seq, next_emb], dim=1)
 
             if done.all():

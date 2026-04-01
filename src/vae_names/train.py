@@ -8,14 +8,17 @@ from .data import decode_sequence, get_dataloaders
 from .model import VAE
 
 
-def vae_loss(logits, targets, mu, log_var, beta, pad_idx):
+def vae_loss(logits, targets, mu, log_var, beta, pad_idx, free_bits=0.0):
     recon = F.cross_entropy(
         logits.reshape(-1, logits.size(-1)),
         targets.reshape(-1),
         ignore_index=pad_idx,
     )
-    kl = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
-    return recon + beta * kl, recon, kl
+    # KL per dimension: [B, latent_dim] -> mean over batch -> [latent_dim]
+    kl_per_dim = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp()).mean(dim=0)
+    # Free bits: each dimension must contribute at least free_bits nats
+    kl = kl_per_dim.clamp(min=free_bits).sum()
+    return recon + beta * kl, recon, kl_per_dim.sum().detach()
 
 
 def word_dropout(x: torch.Tensor, rate: float, pad_idx: int) -> torch.Tensor:
@@ -34,7 +37,7 @@ def train_epoch(model, loader, optimizer, cfg, beta, device):
         padding_mask = x == cfg.pad_idx
         dec_input = word_dropout(x, cfg.word_dropout_rate, cfg.pad_idx)
         logits, mu, log_var = model(x, padding_mask, decoder_input=dec_input)
-        loss, recon, kl = vae_loss(logits, x, mu, log_var, beta, cfg.pad_idx)
+        loss, recon, kl = vae_loss(logits, x, mu, log_var, beta, cfg.pad_idx, cfg.free_bits)
 
         optimizer.zero_grad()
         loss.backward()
@@ -57,7 +60,7 @@ def val_epoch(model, loader, cfg, beta, device):
         x = x.to(device)
         padding_mask = x == cfg.pad_idx
         logits, mu, log_var = model(x, padding_mask)
-        loss, recon, kl = vae_loss(logits, x, mu, log_var, beta, cfg.pad_idx)
+        loss, recon, kl = vae_loss(logits, x, mu, log_var, beta, cfg.pad_idx, cfg.free_bits)
         total_loss += loss.item()
         total_recon += recon.item()
         total_kl += kl.item()
@@ -110,7 +113,8 @@ def main():
         print(
             f"Epoch {epoch:3d}/{cfg.num_epochs} | beta={beta:.3f} | "
             f"train recon={t_recon:.4f} kl={t_kl:.4f} | "
-            f"val recon={v_recon:.4f} kl={v_kl:.4f}"
+            f"val recon={v_recon:.4f} kl={v_kl:.4f} "
+            f"(free_bits floor={cfg.free_bits * cfg.latent_dim:.2f})"
         )
 
         if epoch % 10 == 0:

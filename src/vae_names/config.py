@@ -23,9 +23,10 @@ class Config:
     batch_size: int = 256
     lr: float = 3e-4
     num_epochs: int = 100
-    kl_anneal_epochs: int = 20
+    kl_anneal_epochs: int = 40
     kl_weight_max: float = 1.0
     temperature: float = 0.8
     grad_clip: float = 1.0
     seed: int = 42
-    word_dropout_rate: float = 0.3
+    word_dropout_rate: float = 0.5
+    free_bits: float = 0.5        # min KL per latent dimension (nats)

@@ -18,15 +18,22 @@ def vae_loss(logits, targets, mu, log_var, beta, pad_idx):
     return recon + beta * kl, recon, kl
 
 
+def word_dropout(x: torch.Tensor, rate: float, pad_idx: int) -> torch.Tensor:
+    """Replace non-PAD tokens with pad_idx with probability `rate`."""
+    if rate <= 0.0:
+        return x
+    mask = (torch.rand_like(x, dtype=torch.float) < rate) & (x != pad_idx)
+    return x.masked_fill(mask, pad_idx)
+
+
 def train_epoch(model, loader, optimizer, cfg, beta, device):
     model.train()
     total_loss = total_recon = total_kl = 0.0
     for (x,) in loader:
         x = x.to(device)
-        # Input: full sequence [SOS, c1, ..., cn, EOS, PAD...]
-        # Target: same sequence (decoder sees x, predicts x at each position)
         padding_mask = x == cfg.pad_idx
-        logits, mu, log_var = model(x, padding_mask)
+        dec_input = word_dropout(x, cfg.word_dropout_rate, cfg.pad_idx)
+        logits, mu, log_var = model(x, padding_mask, decoder_input=dec_input)
         loss, recon, kl = vae_loss(logits, x, mu, log_var, beta, cfg.pad_idx)
 
         optimizer.zero_grad()

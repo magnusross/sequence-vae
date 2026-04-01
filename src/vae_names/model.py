@@ -184,16 +184,23 @@ class VAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + std * eps
 
-    def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None = None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        decoder_input: torch.Tensor | None = None,
+    ):
         """
-        x: [B, S] token ids (starts with SOS)
+        x: [B, S] token ids (starts with SOS) — used for encoding and as loss target.
+        decoder_input: optionally corrupted version of x for decoder input only.
+                       If None, uses x unchanged.
         Returns: (logits [B, S, vocab_size], mu [B, L], log_var [B, L])
         """
         if padding_mask is None:
             padding_mask = self._padding_mask(x)
         mu, log_var = self.encoder(x, padding_mask)
         z = self.reparameterize(mu, log_var)
-        logits = self.decoder(z, x)
+        logits = self.decoder(z, x if decoder_input is None else decoder_input)
         return logits, mu, log_var
 
     def encode(self, x: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:

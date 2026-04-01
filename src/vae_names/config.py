@@ -28,3 +28,4 @@ class Config:
     temperature: float = 0.8
     grad_clip: float = 1.0
     seed: int = 42
+    word_dropout_rate: float = 0.3
